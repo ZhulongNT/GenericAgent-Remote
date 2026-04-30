@@ -96,6 +96,7 @@ If you prefer a modern Python workflow, GenericAgent also provides a minimal `py
 ```bash
 git clone https://github.com/lsdefine/GenericAgent.git
 cd GenericAgent
+uv venv
 uv pip install -e ".[ui]"        # Core + GUI dependencies
 cp mykey_template.py mykey.py
 python launch.pyw
