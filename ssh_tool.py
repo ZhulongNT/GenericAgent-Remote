@@ -14,6 +14,7 @@
 - 自动心跳：定期发送 keepalive 保持连接活跃
 - 自动重连：连接断开时自动尝试重连
 - 健康检查：检测连接是否有效
+- 空闲超时：可选主动断开连接
 
 使用方法：
     # 方式1：使用上下文管理器（推荐）
@@ -124,12 +125,14 @@ class SSHSession:
     - 健康检查：检测连接是否有效
     """
     
-    def __init__(self, keepalive_interval: int = 30, auto_reconnect: bool = True):
+    def __init__(self, keepalive_interval: int = 30, auto_reconnect: bool = True,
+                 idle_timeout: int = 0):
         """初始化 SSH 会话
         
         Args:
             keepalive_interval: 心跳间隔（秒），建议 < 10 分钟
             auto_reconnect: 是否自动重连
+            idle_timeout: 空闲超时（秒），0 表示不超时。超过此时间无活动则自动关闭连接
         """
         self.client: Optional[paramiko.SSHClient] = None
         self.host: Optional[str] = None
@@ -140,13 +143,14 @@ class SSHSession:
         self.streaming_sessions: Dict[str, StreamingSession] = {}
         self._session_counter = 0
         
-        # 新增：连接参数存储（用于重连）
+        # 连接参数存储（用于重连）
         self._connect_params: Dict[str, Any] = {}
         self._keepalive_interval = keepalive_interval
         self._auto_reconnect = auto_reconnect
         self._heartbeat_thread: Optional[threading.Thread] = None
         self._heartbeat_running = False
         self._last_activity_time = time.time()
+        self._idle_timeout = idle_timeout
     
     def connect(self, host: str, port: int = 22, username: str = "root",
                 password: Optional[str] = None, key_filename: Optional[str] = None,
@@ -258,6 +262,15 @@ class SSHSession:
         def heartbeat_loop():
             while self._heartbeat_running and self.connected:
                 try:
+                    # 检查空闲超时
+                    if self._idle_timeout > 0:
+                        idle_time = time.time() - self._last_activity_time
+                        if idle_time > self._idle_timeout:
+                            # 空闲超时，主动关闭连接
+                            self.connected = False
+                            self._stop_heartbeat()
+                            break
+                    
                     # 发送 keepalive 数据包
                     if self.client and self.client.get_transport():
                         self.client.get_transport().send_ignore()
@@ -637,6 +650,14 @@ class SSHSession:
         self.close()
         return False
     
+    def __del__(self):
+        """析构函数：对象销毁时自动关闭连接"""
+        try:
+            if self.connected:
+                self.close()
+        except:
+            pass  # 忽略析构时的错误
+    
     def get_status(self) -> Dict[str, Any]:
         """获取连接状态信息"""
         return {
@@ -646,6 +667,7 @@ class SSHSession:
             "username": self.username,
             "is_alive": self.is_alive(),
             "last_activity": self._last_activity_time,
+            "idle_timeout": self._idle_timeout,
             "auto_reconnect": self._auto_reconnect,
             "keepalive_interval": self._keepalive_interval,
             "streaming_sessions_count": len(self.streaming_sessions),
@@ -678,7 +700,8 @@ def _get_session(session_id: Optional[str] = None,
 def ssh_connect(host: str, port: int = 22, username: str = "root",
                 password: Optional[str] = None, key_filename: Optional[str] = None,
                 session_id: Optional[str] = None, timeout: int = 10,
-                keepalive_interval: int = 30, auto_reconnect: bool = True) -> Dict[str, Any]:
+                keepalive_interval: int = 30, auto_reconnect: bool = True,
+                idle_timeout: int = 0) -> Dict[str, Any]:
     """连接到远程 SSH 服务器
     
     Args:
@@ -691,6 +714,7 @@ def ssh_connect(host: str, port: int = 22, username: str = "root",
         timeout: 连接超时
         keepalive_interval: 心跳间隔（秒），建议 < 10 分钟
         auto_reconnect: 是否自动重连
+        idle_timeout: 空闲超时（秒），0 表示不超时
     
     Returns:
         包含连接状态的字典
@@ -698,7 +722,9 @@ def ssh_connect(host: str, port: int = 22, username: str = "root",
     if not session_id:
         session_id = f"ssh_{host}_{port}_{username}"
     
-    session = SSHSession(keepalive_interval=keepalive_interval, auto_reconnect=auto_reconnect)
+    session = SSHSession(keepalive_interval=keepalive_interval, 
+                        auto_reconnect=auto_reconnect,
+                        idle_timeout=idle_timeout)
     result = session.connect(host, port, username, password, key_filename, timeout)
     
     if result["status"] == "success":
@@ -870,12 +896,14 @@ def quick_execute(host: str, command: str, username: str = "root",
 
 def connect_workspace(host: str, port: int = 22, username: str = "root",
                       password: Optional[str] = None, 
-                      session_id: Optional[str] = None) -> Dict[str, Any]:
+                      session_id: Optional[str] = None,
+                      idle_timeout: int = 0) -> Dict[str, Any]:
     """连接远程 workspace（优化配置）
     
     针对 10 分钟超时的 workspace 优化：
     - 心跳间隔：2 分钟（确保在 10 分钟内有活动）
     - 自动重连：开启
+    - 可选空闲超时：主动断开连接
     
     Args:
         host: 主机地址
@@ -883,6 +911,7 @@ def connect_workspace(host: str, port: int = 22, username: str = "root",
         username: 用户名
         password: 密码
         session_id: 会话 ID
+        idle_timeout: 空闲超时（秒），0 表示不超时
     
     Returns:
         包含连接状态的字典
@@ -894,7 +923,8 @@ def connect_workspace(host: str, port: int = 22, username: str = "root",
         password=password,
         session_id=session_id,
         keepalive_interval=120,  # 2 分钟心跳
-        auto_reconnect=True
+        auto_reconnect=True,
+        idle_timeout=idle_timeout
     )
 
 
