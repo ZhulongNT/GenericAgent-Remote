@@ -520,6 +520,81 @@ class GenericAgentHandler(BaseHandler):
         else: result = "Memory Management SOP not found. Do not update memory."
         return StepOutcome(result, next_prompt=prompt)
 
+    def do_ssh_connect(self, args, response):
+        '''连接到远程SSH服务器。返回session_id用于后续命令执行。'''
+        try:
+            from ssh_tool import ssh_connect
+            result = ssh_connect(
+                host=args.get("host", ""),
+                port=int(args.get("port", 22)),
+                username=args.get("username", "root"),
+                password=args.get("password"),
+                key_filename=args.get("key_filename"),
+                session_id=args.get("session_id"),
+                timeout=int(args.get("timeout", 10))
+            )
+            next_prompt = self._get_anchor_prompt(skip=args.get('_index', 0) > 0)
+            return StepOutcome(result, next_prompt=next_prompt)
+        except Exception as e:
+            return StepOutcome({"status": "error", "msg": f"SSH连接失败: {str(e)}"}, 
+                             next_prompt=self._get_anchor_prompt())
+
+    def do_ssh_execute(self, args, response):
+        '''在远程服务器上执行命令。blocking模式返回完整结果，streaming模式启动后台流式输出。'''
+        try:
+            from ssh_tool import ssh_execute
+            result = ssh_execute(
+                command=args.get("command", ""),
+                session_id=args.get("session_id"),
+                timeout=int(args.get("timeout", 60)),
+                mode=args.get("mode", "blocking")
+            )
+            next_prompt = self._get_anchor_prompt(skip=args.get('_index', 0) > 0)
+            return StepOutcome(result, next_prompt=next_prompt)
+        except Exception as e:
+            return StepOutcome({"status": "error", "msg": f"SSH执行失败: {str(e)}"}, 
+                             next_prompt=self._get_anchor_prompt())
+
+    def do_ssh_read_output(self, args, response):
+        '''读取流式SSH会话的缓冲输出。'''
+        try:
+            from ssh_tool import ssh_read_output
+            result = ssh_read_output(
+                session_id=args.get("session_id", ""),
+                lines=int(args.get("lines", 0)),
+                since_marker=args.get("since_marker")
+            )
+            next_prompt = self._get_anchor_prompt(skip=args.get('_index', 0) > 0)
+            return StepOutcome(result, next_prompt=next_prompt)
+        except Exception as e:
+            return StepOutcome({"status": "error", "msg": f"读取输出失败: {str(e)}"}, 
+                             next_prompt=self._get_anchor_prompt())
+
+    def do_ssh_send_input(self, args, response):
+        '''向流式SSH会话发送输入（用于交互式命令如sudo密码）。'''
+        try:
+            from ssh_tool import ssh_send_input
+            result = ssh_send_input(
+                session_id=args.get("session_id", ""),
+                text=args.get("text", "")
+            )
+            next_prompt = self._get_anchor_prompt(skip=args.get('_index', 0) > 0)
+            return StepOutcome(result, next_prompt=next_prompt)
+        except Exception as e:
+            return StepOutcome({"status": "error", "msg": f"发送输入失败: {str(e)}"}, 
+                             next_prompt=self._get_anchor_prompt())
+
+    def do_ssh_close(self, args, response):
+        '''关闭SSH连接和所有相关的流式会话。'''
+        try:
+            from ssh_tool import ssh_close
+            result = ssh_close(session_id=args.get("session_id"))
+            next_prompt = self._get_anchor_prompt(skip=args.get('_index', 0) > 0)
+            return StepOutcome(result, next_prompt=next_prompt)
+        except Exception as e:
+            return StepOutcome({"status": "error", "msg": f"关闭连接失败: {str(e)}"}, 
+                             next_prompt=self._get_anchor_prompt())
+
     def _fold_earlier(self, lines):
         FALLBACK = '直接回答了用户问题'
         parts, cnt, last = [], 0, ''

@@ -70,5 +70,52 @@
     "name": "start_long_term_update",
     "description": "Start distilling long-term memory. Call when discovering info worth remembering (env facts/user prefs/lessons learned). Skip if memory already updated or in autonomous flow. Must call when a task that took 15+ turns is completed",
     "parameters": {"type": "object", "properties": {}}}
+  },
+  {"type": "function", "function": {
+    "name": "ssh_connect",
+    "description": "Connect to remote SSH server. Returns session_id for subsequent commands. Use blocking mode (ssh_execute with mode='blocking') for simple queries like df, ps, ls. Use streaming mode for tail -f, watch, sudo, or when LLM needs to make decisions based on real-time output.",
+    "parameters": {"type": "object", "properties": {
+      "host": {"type": "string", "description": "Remote server hostname or IP"},
+      "port": {"type": "integer", "description": "SSH port, default 22", "default": 22},
+      "username": {"type": "string", "description": "SSH username", "default": "root"},
+      "password": {"type": "string", "description": "Password (use with key_filename if both needed)"},
+      "key_filename": {"type": "string", "description": "Path to private key file"},
+      "session_id": {"type": "string", "description": "Custom session ID for managing multiple connections"},
+      "timeout": {"type": "integer", "description": "Connection timeout in seconds", "default": 10}
+    }, "required": ["host"]}}
+  },
+  {"type": "function", "function": {
+    "name": "ssh_execute",
+    "description": "Execute command on remote server via SSH. blocking mode: returns full output (for simple queries). streaming mode: starts background streaming, use ssh_read_output to get output.",
+    "parameters": {"type": "object", "properties": {
+      "command": {"type": "string", "description": "Command to execute"},
+      "session_id": {"type": "string", "description": "Session ID from ssh_connect (uses most recent if omitted)"},
+      "timeout": {"type": "integer", "description": "Timeout in seconds for blocking mode", "default": 60},
+      "mode": {"type": "string", "enum": ["blocking", "streaming"], "description": "blocking=wait for result; streaming=background with real-time output", "default": "blocking"}
+    }, "required": ["command"]}}
+  },
+  {"type": "function", "function": {
+    "name": "ssh_read_output",
+    "description": "Read buffered output from a streaming SSH session. Use since_marker to get only new output since last read.",
+    "parameters": {"type": "object", "properties": {
+      "session_id": {"type": "string", "description": "Streaming session ID from ssh_execute"},
+      "lines": {"type": "integer", "description": "Return last N lines (0=all)", "default": 0},
+      "since_marker": {"type": "string", "description": "Return output since this marker string"}
+    }, "required": ["session_id"]}}
+  },
+  {"type": "function", "function": {
+    "name": "ssh_send_input",
+    "description": "Send input to an interactive SSH session (e.g., for sudo password, ssh-keygen prompts).",
+    "parameters": {"type": "object", "properties": {
+      "session_id": {"type": "string", "description": "Streaming session ID"},
+      "text": {"type": "string", "description": "Text to send (newline auto-appended)"}
+    }, "required": ["session_id", "text"]}}
+  },
+  {"type": "function", "function": {
+    "name": "ssh_close",
+    "description": "Close SSH connection and all associated streaming sessions.",
+    "parameters": {"type": "object", "properties": {
+      "session_id": {"type": "string", "description": "Session to close (closes all if omitted)"}
+    }}}
   }
 ]

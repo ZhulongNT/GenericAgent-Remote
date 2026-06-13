@@ -70,5 +70,52 @@
     "name": "start_long_term_update",
     "description": "准备开始提炼记忆。发现值得长期记忆的信息（环境事实/用户偏好/避坑经验）时调用此工具。已记忆更新或在自主流程内时无需调用。超15轮完成的任务必须调用以沉淀经验",
     "parameters": {"type": "object", "properties": {}}}
+  },
+  {"type": "function", "function": {
+    "name": "ssh_connect",
+    "description": "连接到远程SSH服务器。返回session_id用于后续命令执行。简单查询用阻塞模式，持续输出/交互命令/需要实时决策用流式模式",
+    "parameters": {"type": "object", "properties": {
+      "host": {"type": "string", "description": "远程服务器主机名或IP"},
+      "port": {"type": "integer", "description": "SSH端口，默认22", "default": 22},
+      "username": {"type": "string", "description": "SSH用户名", "default": "root"},
+      "password": {"type": "string", "description": "密码（可与key_filename同时使用）"},
+      "key_filename": {"type": "string", "description": "私钥文件路径"},
+      "session_id": {"type": "string", "description": "自定义会话ID，用于管理多个连接"},
+      "timeout": {"type": "integer", "description": "连接超时（秒）", "default": 10}
+    }, "required": ["host"]}}
+  },
+  {"type": "function", "function": {
+    "name": "ssh_execute",
+    "description": "在远程服务器上执行命令。blocking模式返回完整结果（简单查询），streaming模式启动后台流式输出（tail -f, watch, sudo等）",
+    "parameters": {"type": "object", "properties": {
+      "command": {"type": "string", "description": "要执行的命令"},
+      "session_id": {"type": "string", "description": "会话ID，来自ssh_connect（不指定则使用最近的会话）"},
+      "timeout": {"type": "integer", "description": "blocking模式超时时间（秒）", "default": 60},
+      "mode": {"type": "string", "enum": ["blocking", "streaming"], "description": "blocking=等待结果; streaming=后台流式输出", "default": "blocking"}
+    }, "required": ["command"]}}
+  },
+  {"type": "function", "function": {
+    "name": "ssh_read_output",
+    "description": "读取流式SSH会话的缓冲输出。使用since_marker获取上次读取后的新输出",
+    "parameters": {"type": "object", "properties": {
+      "session_id": {"type": "string", "description": "流式会话ID"},
+      "lines": {"type": "integer", "description": "返回最后N行（0=全部）", "default": 0},
+      "since_marker": {"type": "string", "description": "返回从指定标记之后的输出"}
+    }, "required": ["session_id"]}}
+  },
+  {"type": "function", "function": {
+    "name": "ssh_send_input",
+    "description": "向流式SSH会话发送输入（用于sudo密码、ssh-keygen等交互式命令）",
+    "parameters": {"type": "object", "properties": {
+      "session_id": {"type": "string", "description": "流式会话ID"},
+      "text": {"type": "string", "description": "要发送的文本（自动添加换行符）"}
+    }, "required": ["session_id", "text"]}}
+  },
+  {"type": "function", "function": {
+    "name": "ssh_close",
+    "description": "关闭SSH连接和所有相关的流式会话",
+    "parameters": {"type": "object", "properties": {
+      "session_id": {"type": "string", "description": "要关闭的会话ID（不指定则关闭所有）"}
+    }}}
   }
 ]
