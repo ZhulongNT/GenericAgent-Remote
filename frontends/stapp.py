@@ -23,14 +23,9 @@ st.set_page_config(page_title="Cowork", layout="wide", initial_sidebar_state="co
 
 st.markdown("""
 <style>
-[data-testid="stBottom"] {
-    position: fixed !important;
-    bottom: 0 !important;
-    left: 0; right: 0;
-    z-index: 999;
-    background: var(--background-color, #ffffff);
-}
-.stMainBlockContainer { padding-bottom: 10rem !important; }
+[data-testid="stBottom"]{position:fixed!important;bottom:0!important;left:0!important;right:0!important;width:100vw!important;z-index:999;background:var(--background-color,#fff)}
+@media (min-width:768px){[data-testid="stSidebar"][aria-expanded="true"]~div [data-testid="stBottom"]{left:300px!important;width:calc(100vw - 300px)!important}}
+.stMainBlockContainer{padding-bottom:10rem!important}
 </style>
 """, unsafe_allow_html=True)
 
