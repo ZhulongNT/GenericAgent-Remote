@@ -81,7 +81,10 @@
       "password": {"type": "string", "description": "Password (use with key_filename if both needed)"},
       "key_filename": {"type": "string", "description": "Path to private key file"},
       "session_id": {"type": "string", "description": "Custom session ID for managing multiple connections"},
-      "timeout": {"type": "integer", "description": "Connection timeout in seconds", "default": 10}
+      "timeout": {"type": "integer", "description": "Connection timeout in seconds", "default": 10},
+      "keepalive_interval": {"type": "integer", "description": "Keepalive heartbeat interval in seconds. Set < 600 for workspace with 10min timeout", "default": 30},
+      "auto_reconnect": {"type": "boolean", "description": "Auto reconnect on connection loss", "default": true},
+      "idle_timeout": {"type": "integer", "description": "Idle timeout in seconds (0=no timeout). Disconnects after this period of inactivity", "default": 0}
     }, "required": ["host"]}}
   },
   {"type": "function", "function": {
