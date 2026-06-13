@@ -317,7 +317,7 @@ class SSHSession:
                             data = channel.recv_stderr(4096).decode('utf-8', errors='replace')
                             if data:
                                 streaming.append_error(data)
-                        time.sleep(0.05)  # 避免 CPU 占用过高
+                        time.sleep(0.1)  # 避免 CPU 占用过高
                     
                     # 读取剩余数据
                     while channel.recv_ready():
@@ -334,7 +334,10 @@ class SSHSession:
                     streaming.append_error(f"读取错误: {str(e)}")
                 finally:
                     streaming.is_running = False
-                    channel.close()
+                    try:
+                        channel.close()
+                    except Exception:
+                        pass
             
             streaming.thread = threading.Thread(target=read_output, daemon=True)
             streaming.thread.start()
@@ -411,19 +414,24 @@ class SSHSession:
         except Exception as e:
             return {"status": "error", "msg": f"发送输入失败: {str(e)}"}
     
-    def stop_streaming(self, session_id: str) -> Dict[str, Any]:
+    def stop_streaming(self, session_id: str, _internal: bool = False) -> Dict[str, Any]:
         """停止流式会话
         
         Args:
             session_id: 会话 ID
+            _internal: 内部调用标记（由 close() 调用时传入，跳过锁以避免死锁）
         
         Returns:
             包含最终输出的字典
         """
-        with self.lock:
+        if not _internal:
+            with self.lock:
+                if session_id not in self.streaming_sessions:
+                    return {"status": "error", "msg": f"会话 {session_id} 不存在"}
+                session = self.streaming_sessions[session_id]
+        else:
             if session_id not in self.streaming_sessions:
                 return {"status": "error", "msg": f"会话 {session_id} 不存在"}
-            
             session = self.streaming_sessions[session_id]
         
         if not session.is_running:
@@ -436,7 +444,7 @@ class SSHSession:
         
         try:
             session.channel.close()
-            session.thread.join(timeout=5)
+            session.thread.join(timeout=3)
             session.is_running = False
             
             return {
@@ -470,15 +478,18 @@ class SSHSession:
     def close(self) -> Dict[str, Any]:
         """关闭所有连接和会话"""
         try:
-            # 停止所有流式会话
+            # 停止所有流式会话（在锁内通过 _internal 标记避免死锁）
             with self.lock:
                 for session_id in list(self.streaming_sessions.keys()):
-                    self.stop_streaming(session_id)
+                    self.stop_streaming(session_id, _internal=True)
                 self.streaming_sessions.clear()
             
-            # 关闭 SSH 连接
+            # 关闭 SSH 连接（在锁外操作，避免 transport 关闭阻塞时持锁）
             if self.client:
-                self.client.close()
+                try:
+                    self.client.close()
+                except Exception:
+                    pass
                 self.client = None
             
             self.connected = False
