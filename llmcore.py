@@ -270,14 +270,54 @@ def _try_parse_tool_args(raw):
         return parsed
     return [{"_raw": raw}]
 
+# DSML (DeepSeek tool-call markup) leak guard.
+# Leaked shapes seen in the wild: '<|P|DSML|P|invoke ...>', '</|P|DSML|P| parameter>',
+# '</|P|DSML|P|tool_calls>', '<|DSML|parameter>'. P = ASCII bar / fullwidth bar / double bar.
+_DSML_WS = chr(32) + chr(9)
+_DSML_PIPES = chr(124) + chr(0xFF5C) + chr(0x2016)
+_DSML_TAG = '</?[' + _DSML_WS + ']*[' + _DSML_PIPES + ']{1,2}[' + _DSML_WS + ']*DSML[' + _DSML_WS + ']*[' + _DSML_PIPES + ']{1,2}[^>]{0,200}?>'
+_DSML_PATTERN = re.compile(_DSML_TAG, re.IGNORECASE)
+_DSML_LEAK = False  # latched while parsing one response; reset at the start of each parse
+
+def _strip_dsml_markers(text: str) -> str:
+    # Remove DSML markers that leak into content text (used both on streamed chunks and on the
+    # final assembled text). Handles the closing-tag variants that previously slipped through,
+    # e.g. '</|P|DSML|P| parameter>' and '<|P|DSML|P|invoke name="x">'.
+    # Latches _DSML_LEAK so callers can detect the leak even when payload text remains.
+    global _DSML_LEAK
+    if not text or 'DSML' not in text: return text
+    out = _DSML_PATTERN.sub('', text)
+    if out != text: _DSML_LEAK = True
+    return out
+
+class _DsmlStreamFilter:
+    # Chunk-safe stripper: holds back a trailing '<...' without '>' so a marker split across
+    # SSE chunks is still removed (a plain per-chunk regex cannot see such a split tag).
+    _HOLD_MAX = 64
+    def __init__(self): self.buf = ''
+    def feed(self, chunk):
+        self.buf += chunk
+        cut = self.buf.rfind('<')
+        hold = ''
+        if cut >= 0 and '>' not in self.buf[cut:] and len(self.buf) - cut <= self._HOLD_MAX:
+            hold = self.buf[cut:]; self.buf = self.buf[:cut]
+        out = _strip_dsml_markers(self.buf); self.buf = hold
+        return out
+    def flush(self):
+        out = _strip_dsml_markers(self.buf); self.buf = ''
+        return out
+
 def _parse_openai_sse(resp_lines, api_mode="chat_completions"):
     """Parse OpenAI SSE stream (chat_completions or responses API).
     Yields text chunks, returns list[content_block].
     content_block: {type:'text', text:str} | {type:'tool_use', id:str, name:str, input:dict}
     """
+    global _DSML_LEAK
+    _DSML_LEAK = False  # this parse latches leaks via _strip_dsml_markers
     content_text = ""
     if api_mode == "responses":
         seen_delta = False; fc_buf = {}; current_fc_idx = None; reasoning_text = ""
+        dsml_f = _DsmlStreamFilter()
         for line in resp_lines:
             if not line: continue
             line = line.decode('utf-8', errors='replace') if isinstance(line, bytes) else line
@@ -289,10 +329,10 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions"):
             etype = evt.get("type", "")
             if etype == "response.output_text.delta":
                 delta = evt.get("delta", "")
-                if delta: seen_delta = True; content_text += delta; yield delta
+                if delta: seen_delta = True; content_text += delta; yield dsml_f.feed(delta)
             elif etype == "response.output_text.done" and not seen_delta:
                 text = evt.get("text", "")
-                if text: content_text += text; yield text
+                if text: content_text += text; yield dsml_f.feed(text)
             elif etype == "response.reasoning_text.delta":
                 delta = evt.get("delta", "")
                 if delta: reasoning_text += delta
@@ -339,9 +379,11 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions"):
                 _raise_if_retryable_overload(emsg)
                 if emsg: content_text += f"!!!Error: {emsg}"; yield f"!!!Error: {emsg}"
                 break
+        if (rest := dsml_f.flush()):
+            content_text += rest; yield rest
         blocks = []
         if reasoning_text: blocks.append({"type": "thinking", "thinking": reasoning_text})
-        if content_text: blocks.append({"type": "text", "text": content_text})
+        if content_text: blocks.append({"type": "text", "text": _strip_dsml_markers(content_text)})
         for idx in sorted(fc_buf):
             fc = fc_buf[idx]
             inps = _try_parse_tool_args(fc["args"])
@@ -353,6 +395,7 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions"):
     else:
         tc_buf = {}  # index -> {id, name, args}
         reasoning_text = ""
+        dsml_f = _DsmlStreamFilter()
         for line in resp_lines:
             if not line: continue
             line = line.decode('utf-8', errors='replace') if isinstance(line, bytes) else line
@@ -366,7 +409,7 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions"):
             if rc := delta.get("reasoning_content") or delta.get("reasoning", ""):
                 reasoning_text += rc; yield rc
             if delta.get("content"):
-                text = delta["content"]; content_text += text; yield text
+                text = delta["content"]; content_text += text; yield dsml_f.feed(text)
             for tc in (delta.get("tool_calls") or []):
                 idx = tc.get("index", 0)
                 has_name = bool(tc.get("function", {}).get("name"))
@@ -378,9 +421,11 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions"):
                 if tc.get("id") and not tc_buf[idx]["id"]: tc_buf[idx]["id"] = tc["id"]
             usage = evt.get("usage")
             if usage: _record_usage(usage, api_mode)
+        if (rest := dsml_f.flush()):
+            content_text += rest; yield rest
         blocks = []
         if reasoning_text: blocks.append({"type": "thinking", "thinking": reasoning_text})
-        if content_text: blocks.append({"type": "text", "text": content_text})
+        if content_text: blocks.append({"type": "text", "text": _strip_dsml_markers(content_text)})
         for idx in sorted(tc_buf):
             tc = tc_buf[idx]
             inps = _try_parse_tool_args(tc["args"])
@@ -416,6 +461,8 @@ def _record_usage(usage, api_mode):
     STATS.update(inp=inp, cached=cached, out=out)
     
 def _parse_openai_json(data, api_mode="chat_completions"):
+    global _DSML_LEAK
+    _DSML_LEAK = False
     blocks = []
     if api_mode == "responses":
         _record_usage(data.get("usage") or {}, api_mode)
@@ -423,7 +470,8 @@ def _parse_openai_json(data, api_mode="chat_completions"):
             if item.get("type") == "message":
                 for p in (item.get("content") or []):
                     if p.get("type") in ("output_text", "text") and p.get("text"):
-                        blocks.append({"type": "text", "text": p["text"]}); yield p["text"]
+                        _txt = _strip_dsml_markers(p["text"])
+                        if _txt: blocks.append({"type": "text", "text": _txt}); yield _txt
             elif item.get("type") == "reasoning":
                 for p in (item.get("content") or []):
                     if p.get("type") in ("reasoning_text", "summary_text") and p.get("text"):
@@ -449,7 +497,7 @@ def _parse_openai_json(data, api_mode="chat_completions"):
         reasoning = msg.get("reasoning_content") or msg.get("reasoning", "")
         if reasoning:
             blocks.append({"type": "thinking", "thinking": reasoning})
-        content = msg.get("content", "")
+        content = _strip_dsml_markers(msg.get("content", ""))
         if content:
             blocks.append({"type": "text", "text": content}); yield content
         for tc in (msg.get("tool_calls") or []):
@@ -930,6 +978,7 @@ class MockResponse:
         self.thinking = thinking; self.content = content          
         self.tool_calls = tool_calls; self.raw = raw
         self.stop_reason = 'tool_use' if tool_calls else stop_reason
+        self.dsml_leak = _DSML_LEAK  # latched by _strip_dsml_markers while parsing this response
     def __repr__(self):    
         return f"<MockResponse thinking={bool(self.thinking)}, content='{self.content}', tools={bool(self.tool_calls)}>"
 
