@@ -496,8 +496,20 @@ class GenericAgentHandler(BaseHandler):
         except Exception:
             _calls, _partial = [], False
         if _calls:
-            yield "[Warn] 检测到文本通道的工具调用，已自动执行。\n"
-            return StepOutcome(None, next_prompt="工具已执行，继续任务。")
+            # 真的执行，而不是只喊一句"已执行"（这里只有 agent_loop 没接住时才会走到）
+            yield "[Warn] 检测到文本通道的工具调用，转为真实调用执行。\n"
+            for _i, (_n, _a) in enumerate(_calls):
+                try:
+                    _g = self.dispatch(_n, _a, response, index=_i, tool_num=len(_calls))
+                    try:
+                        while True: next(_g)
+                    except StopIteration as _e:
+                        _o = getattr(_e, "value", None)
+                        if getattr(_o, "should_exit", False): return _o
+                except Exception as _err:
+                    yield f"[Warn] 文本通道调用 {_n} 执行失败: {_err}\n"
+                    return self._retry_or_exit("[ERROR] Text-channel tool call failed to execute. Regenerate using a real tool call.")
+            return StepOutcome(None, next_prompt="文本通道的工具调用已执行，请基于结果继续任务。")
         if _partial:
             yield "[Warn] 工具调用被写成未闭合的文本标记，重试一次。\n"
             return self._retry_or_exit("[ERROR] Your tool call was emitted as truncated markup text (e.g. <code_run\">) instead of a real tool call. Regenerate this turn and call the tool normally.")
