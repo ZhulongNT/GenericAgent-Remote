@@ -66,7 +66,22 @@ def agent_runner_loop(client, system_prompt, user_input, handler, tools_schema,
             if cleaned: yield cleaned + '\n'
         _hook('llm_after', locals())
 
-        if not response.tool_calls: tool_calls = [{'tool_name': 'no_tool', 'args': {}}]
+        if not response.tool_calls:
+            # #837: the model sometimes writes the call as literal markup in the text channel
+            # ("<code_run>...</code_run>" or a truncated "<code_run\">"). Recover and execute it
+            # instead of silently ending the turn; a torn marker still falls through to no_tool,
+            # which asks for a retry.
+            try:
+                from llmcore import split_text_tool_calls
+                _names = {t.get('name') for t in tools_schema if isinstance(t, dict)} - {None}
+                _calls, _partial = split_text_tool_calls(response.content or '', _names)
+            except Exception:
+                _calls, _partial = [], False
+            if _calls:
+                if verbose: yield f"♻️ 文本通道工具调用已恢复执行: {', '.join(n for n, _ in _calls)}\n"
+                tool_calls = [{'tool_name': n, 'args': a, 'id': f'text_call_{turn}_{i}'} for i, (n, a) in enumerate(_calls)]
+            else:
+                tool_calls = [{'tool_name': 'no_tool', 'args': {}}]
         else: tool_calls = [{'tool_name': tc.function.name, 'args': json.loads(tc.function.arguments), 'id': tc.id}
                           for tc in response.tool_calls]
        
