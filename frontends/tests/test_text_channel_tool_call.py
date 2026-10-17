@@ -115,3 +115,47 @@ def test_incomplete_with_content_is_flagged():
     ]
     text, _ = _run_sse(lines)
     assert "output truncated: max_output_tokens" in text
+
+def _load_agent_loop():
+    spec = importlib.util.spec_from_file_location("agent_loop_under_test", ROOT / "agent_loop.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+agent_loop = _load_agent_loop()
+
+
+def test_schema_names_accept_the_openai_nested_form():
+    # Regression: assets/tools_schema.json ships {"type": "function", "function": {"name": ...}}.
+    # Reading only entry["name"] yielded an empty name set, and split_text_tool_calls
+    # bails out immediately on an empty set -- so recovery silently never ran, and the
+    # leaked markup reached the user (2026-10-17, after the first fix looked applied).
+    names = agent_loop.tool_names_from_schema([
+        {"type": "function", "function": {"name": "code_run"}},
+        {"name": "flat_form_tool"},
+        "junk",
+        {},
+    ])
+    assert names == {"code_run", "flat_form_tool"}
+
+
+def test_schema_names_of_the_shipped_schema():
+    schema = json.loads((ROOT / "assets" / "tools_schema.json").read_text(encoding="utf-8"))
+    names = agent_loop.tool_names_from_schema(schema)
+    assert "code_run" in names and "file_write" in names and len(names) >= 9
+
+
+def test_leaked_block_survives_a_language_tag_line_and_is_recovered():
+    # The real leak ended with "...\n python\n</code_run>": the language tag sits
+    # *inside* the block, so the tail still parses -- provided the name set is real.
+    text = (
+        "Run: list the files.\n\n"
+        ' <code_run>\n import os\n print(os.getcwd())\n\n python\n </code_run> '
+    )
+    schema = json.loads((ROOT / "assets" / "tools_schema.json").read_text(encoding="utf-8"))
+    names = agent_loop.tool_names_from_schema(schema)
+    calls, partial = split(text, names)
+    assert partial is False
+    assert len(calls) == 1 and calls[0][0] == "code_run"
+    assert "print(os.getcwd())" in calls[0][1]["script"]

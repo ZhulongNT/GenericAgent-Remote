@@ -28,6 +28,22 @@ class BaseHandler:
             yield f"未知工具: {tool_name}\n"
             return StepOutcome(None, next_prompt=f"未知工具 {tool_name}", should_exit=False)
 
+def tool_names_from_schema(tools_schema):
+    """Collect tool names from a schema list.
+
+    Accepts both the flat form ({"name": ...}) and the OpenAI form
+    ({"type": "function", "function": {"name": ...}}) -- the shipped
+    assets/tools_schema.json uses the latter, and reading only the top level
+    silently yields an empty set (which made text-channel recovery a no-op).
+    """
+    names = set()
+    for entry in tools_schema or []:
+        if not isinstance(entry, dict): continue
+        fn = entry.get("function")
+        name = (fn.get("name") if isinstance(fn, dict) else None) or entry.get("name")
+        if name: names.add(name)
+    return names
+
 def json_default(o): return list(o) if isinstance(o, set) else str(o)
 def exhaust(g):
     try: 
@@ -73,7 +89,7 @@ def agent_runner_loop(client, system_prompt, user_input, handler, tools_schema,
             # which asks for a retry.
             try:
                 from llmcore import split_text_tool_calls
-                _names = {t.get('name') for t in tools_schema if isinstance(t, dict)} - {None}
+                _names = tool_names_from_schema(tools_schema)
                 _calls, _partial = split_text_tool_calls(response.content or '', _names)
             except Exception:
                 _calls, _partial = [], False
