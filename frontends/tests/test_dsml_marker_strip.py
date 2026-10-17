@@ -130,7 +130,8 @@ def test_stream_filter_flushes_plain_text_unchanged():
 def test_all_streamed_content_chunks_pass_through_the_filter():
     """Integration contract: every streamed content yield must be filtered."""
     source = LLMCORE.read_text(encoding="utf-8")
-    assert source.count("yield dsml_f.feed(") == 3, "responses delta/done + chat delta"
+    # responses: delta, output_text.done, completed-snapshot fallback, incomplete/chat: delta
+    assert source.count("yield dsml_f.feed(") == 4, "responses delta/done/completed + chat delta"
     assert source.count("dsml_f.flush()") == 2, "one flush per api_mode branch"
     assert "_DSML_LEAK = False  # this parse" in source, "latch reset per parse"
 

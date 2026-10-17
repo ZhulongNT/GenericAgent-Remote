@@ -494,6 +494,21 @@ class GenericAgentHandler(BaseHandler):
             yield "[Warn] DSML tool-call markup leaked into content, no real tool call. Retrying...\n"
             return self._retry_or_exit("[ERROR] Your tool call leaked as raw DSML markup text instead of a real tool call. Regenerate this turn and call the tool normally.")
         
+        # 模型把工具调用写成了文本 XML（完整 <code_run>…</code_run> 或截断的 <code_run">），
+        # 本回合其实没有 tool_call（#837 复发）。完整的已由 agent_runner_loop 自动执行，
+        # 这里兜住其它调用路径；截断的必须重试，否则整轮直接"停"。
+        try:
+            from llmcore import split_text_tool_calls
+            _calls, _partial = split_text_tool_calls(content, {n[3:] for n in dir(self) if n.startswith('do_')})
+        except Exception:
+            _calls, _partial = [], False
+        if _calls:
+            yield "[Warn] 检测到文本通道的工具调用，已自动执行。\n"
+            return StepOutcome(None, next_prompt="工具已执行，继续任务。")
+        if _partial:
+            yield "[Warn] 工具调用被写成未闭合的文本标记，重试一次。\n"
+            return self._retry_or_exit("[ERROR] Your tool call was emitted as truncated markup text (e.g. <code_run\">) instead of a real tool call. Regenerate this turn and call the tool normally.")
+        
         if self._in_plan_mode() and any(kw in content for kw in ['任务完成', '全部完成', '已完成所有', '🏁']):
             if 'VERDICT' not in content and '[VERIFY]' not in content and '验证subagent' not in content:
                 yield "[Warn] Plan模式完成声明拦截。\n"
