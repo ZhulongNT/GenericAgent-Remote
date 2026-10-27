@@ -317,6 +317,32 @@ _TEXT_CALL_TAG = re.compile(r'<\s*([A-Za-z_][\w\-]*)\s*([^<>]*?)/?\s*>', re.S)
 _TEXT_PARAM = re.compile(r'<\s*parameter\s+name\s*=\s*["\']([^"\']+)["\']\s*>(.*?)<\s*/\s*parameter\s*>', re.S | re.I)
 _TEXT_ATTR = re.compile(r'([A-Za-z_][\w\-]*)\s*=\s*("([^"]*)"|\'([^\']*)\')')
 
+_TEXT_JUNK_TAIL = re.compile(r'^(?:\s*</\s*[A-Za-z_][\w\-]*\s*>)*\s*$', re.S)
+# 只剥「后面还有正文」的围栏块：结尾处的围栏里可能就是泄漏的调用本身
+_TEXT_FENCE_RE = re.compile(r'```.*?```(?=\s*\S)', re.S)
+
+def strip_code_spans(text):
+    """去掉引用用的代码块/行内代码。
+
+    在文档、issue、commit message 里**引用**标记不是泄漏，只有裸写的标记才算。
+    结尾处的围栏块会被保留，因为那往往就是模型把调用包进 ``` 里发出的。
+    """
+    text = _TEXT_FENCE_RE.sub(' ', text or '')
+    return re.sub(r'`[^`\n]*`', ' ', text)
+
+def _quoted_markup(text, pos):
+    """pos 处的标记是否只是引用（围栏块或行内代码），而非模型真的在调用工具。"""
+    if pos <= 0: return False
+    line_start = text.rfind('\n', 0, pos) + 1
+    if text[line_start:pos].count('`') % 2 == 1: return True          # 行内代码
+    if text.count('```', 0, pos) % 2 == 0: return False               # 不在围栏里
+    close = text.find('```', pos)
+    return close >= 0 and bool(text[close + 3:].strip())              # 围栏后面还有正文
+
+def _text_tail_is_junk(rest):
+    """闭标签之后只剩 </invoke> </function> 这类残留收尾标签。"""
+    return bool(_TEXT_JUNK_TAIL.match(rest or ''))
+
 def _text_tag_args(attrs):
     out = {}
     for m in _TEXT_ATTR.finditer(attrs or ''):
@@ -337,8 +363,13 @@ def _text_call_body(name, body):
             return obj
         return None
     params = _TEXT_PARAM.findall(body)
-    if params: return {k: v.strip() for k, v in params}
-    return {'script': body} if name == 'code_run' else None
+    args = {k: v.strip() for k, v in params} if params else {}
+    if name == 'code_run':
+        # 变体：模型用 <script>…</script> 当参数容器，而不是 <parameter name="script">
+        m = re.search(r'<\s*script\b[^>]*>(.*?)<\s*/\s*script\s*>', body, re.S | re.I)
+        if m is not None and 'script' not in args: args['script'] = m.group(1).strip()
+        if not args: return {'script': body if m is None else m.group(1).strip()}
+    return args or None
 
 def split_text_tool_calls(text, tool_names):
     """Recover a tool call the model emitted as markup in the text channel.
@@ -357,17 +388,24 @@ def split_text_tool_calls(text, tool_names):
         m = re.search(r'<\s*([A-Za-z_][\w\-]*)\s*[^<>]*$', tail)
         if m and (m.group(1) in tool_names or m.group(1) in ('tool_use', 'tool_call')):
             return [], True
+        # 截断在参数值中间（'<parameter name="timeout">180'）：开标签在，闭标签永远没来
+        for m in _TEXT_CALL_TAG.finditer(tail):
+            if m.group(1) not in tool_names or _quoted_markup(tail, m.start()): continue
+            if ('</%s>' % m.group(1)) in tail[m.end():]: continue
+            if len(tail) - m.end() <= 1200 and '\n\n' not in tail[m.end():]:
+                return [], True
         return [], False
     last = None
     for m in _TEXT_CALL_TAG.finditer(tail):
         if m.group(1) in tool_names or m.group(1) in ('tool_use', 'tool_call'): last = m
     if last is None: return [], False
+    if _quoted_markup(tail, last.start()): return [], False   # 代码块/行内代码里的引用
     name = last.group(1)
     close = '</%s>' % name
     end = tail.find(close, last.end())
     if name in ('tool_use', 'tool_call'):
         if end < 0: return [], True
-        if tail[end + len(close):].strip(): return [], False
+        if not _text_tail_is_junk(tail[end + len(close):]): return [], False
         try: obj = json.loads(tail[last.end():end].strip())
         except Exception: return [], True
         if not isinstance(obj, dict): return [], True
@@ -386,7 +424,7 @@ def split_text_tool_calls(text, tool_names):
         if args is None: return [], True
         args.update(_text_tag_args(last.group(2)))
         return [(name, args)], False
-    if tail[end + len(close):].strip(): return [], False   # text follows: not a leaked call
+    if not _text_tail_is_junk(tail[end + len(close):]): return [], False   # 后面还有正文：不算调用
     args = _text_call_body(name, tail[last.end():end])
     if args is None: return [], True
     args.update(_text_tag_args(last.group(2)))

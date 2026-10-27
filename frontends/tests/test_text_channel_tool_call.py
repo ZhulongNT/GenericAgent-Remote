@@ -159,3 +159,52 @@ def test_leaked_block_survives_a_language_tag_line_and_is_recovered():
     assert partial is False
     assert len(calls) == 1 and calls[0][0] == "code_run"
     assert "print(os.getcwd())" in calls[0][1]["script"]
+
+# --- variants seen on 2026-10-27: <script> containers, stray closing tags, truncation ---
+
+
+def test_script_container_variant_is_executable():
+    """The model used <script>..</script> as the parameter container."""
+    text = ('<code_run><script>print(1)</script>'
+            '<parameter name="type">python</parameter></code_run>')
+    calls, partial = split(text, TOOLS)
+    assert partial is False
+    assert calls == [("code_run", {"script": "print(1)", "type": "python"})]
+
+
+def test_bare_script_tag_becomes_script_arg():
+    text = '<code_run>\n<script>\nx = 1\n</script>\n</code_run>'
+    calls, partial = split(text, TOOLS)
+    assert partial is False
+    assert calls == [("code_run", {"script": "x = 1"})]
+
+
+def test_stray_closing_tags_after_call_are_ignored():
+    """'</invoke>' / '</function>' tails used to make the call look like prose."""
+    text = ('<code_run><parameter name="script">x = 1</parameter></code_run>\n'
+            '</invoke>\n</function>')
+    calls, partial = split(text, TOOLS)
+    assert partial is False
+    assert calls == [("code_run", {"script": "x = 1"})]
+
+
+def test_truncated_mid_parameter_value_is_partial():
+    """max_tokens cut the stream inside a value: '<parameter name="timeout">180'."""
+    text = ('<code_run><parameter name="script">print(1)</parameter>'
+            '<parameter name="timeout">180')
+    calls, partial = split(text, TOOLS)
+    assert calls == [] and partial is True
+
+
+def test_fenced_quoted_sample_is_not_executed():
+    text = ('示例：\n```\n<code_run><parameter name="script">x = 1</parameter></code_run>\n'
+            '```\n以上就是格式。')
+    calls, partial = split(text, TOOLS)
+    assert calls == [] and partial is False
+
+
+def test_strip_code_spans_keeps_trailing_fence():
+    quoted = '写法是 `</|DSML| parameter>` 这样'
+    assert 'DSML' not in llmcore.strip_code_spans(quoted)
+    trailing = '正文\n```\n<code_run>x</code_run>\n```'
+    assert '<code_run>' in llmcore.strip_code_spans(trailing)
