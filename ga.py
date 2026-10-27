@@ -482,7 +482,10 @@ class GenericAgentHandler(BaseHandler):
             return self._retry_or_exit("[ERROR] Tool call format invalid; no tool was called. Regenerate using proper tool calls.")
         if 'max_tokens !!!]' in content[-100:]:
             return self._retry_or_exit("[ERROR] max_tokens limit reached. Use multi small steps to do it.")
-        if getattr(response, 'dsml_leak', False) or re.search(r'</?[|｜‖]{1,2}DSML', content[-200:]):
+        from llmcore import strip_code_spans
+        # 只认「裸写」的标记：回复里用反引号/围栏**引用**该标记（写文档、报 issue）不是泄漏
+        _visible_tail = strip_code_spans(content[-4000:])[-200:]
+        if getattr(response, 'dsml_leak', False) or re.search(r'</?[|｜‖]{1,2}DSML', _visible_tail):
             # 模型把工具调用写成了 DSML 标记文本(多种变体/跨 chunk 泄漏)，本回合其实没真正调用工具
             yield "[Warn] DSML tool-call markup leaked into content, no real tool call. Retrying...\n"
             return self._retry_or_exit("[ERROR] Your tool call leaked as raw DSML markup text instead of a real tool call. Regenerate this turn and call the tool normally.")
